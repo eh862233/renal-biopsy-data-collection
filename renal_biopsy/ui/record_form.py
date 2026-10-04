@@ -2,7 +2,7 @@
 import copy
 from typing import Dict
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QPlainTextEdit, QPushButton, QScrollArea,
                                QSplitter, QStackedWidget, QVBoxLayout, QWidget)
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxL
 from .. import schema
 from ..db import patient_label
 from ..utils import calc_age, calc_bmi, normalize_date, normalize_national_id
+from . import theme
 from .widgets import CheckGroup, ImageList, LabTable
 
 
@@ -27,32 +28,44 @@ class RecordForm(QWidget):
         self._loading = False
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(22, 16, 22, 14)
+        root.setSpacing(10)
         # ---- 標題列 ----
         top = QHBoxLayout()
         self.title = QLabel()
-        self.title.setStyleSheet("font-size:18px;font-weight:bold;")
+        self.title.setObjectName("H1")
         top.addWidget(self.title)
         top.addStretch()
         self.status = QLabel()
+        self.status.setObjectName("Muted")
         top.addWidget(self.status)
         root.addLayout(top)
         self.banner = QLabel()
         self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background:#FFF4CE;color:#5C4400;padding:6px;border-radius:4px;")
+        self.banner.setObjectName("Banner")
         self.banner.hide()
         root.addWidget(self.banner)
 
         # ---- 左側目錄 + 右側內容 ----
         split = QSplitter(Qt.Horizontal)
         self.nav = QListWidget()
-        self.nav.setMaximumWidth(240)
+        self.nav.setObjectName("Nav")
+        self.nav.setMaximumWidth(250)
+        self.nav.setMinimumWidth(210)
         self.pages = QStackedWidget()
+        page_card = QFrame()
+        page_card.setObjectName("Card")
+        pc = QVBoxLayout(page_card)
+        pc.setContentsMargins(18, 14, 8, 10)
+        pc.addWidget(self.pages)
         split.addWidget(self.nav)
-        split.addWidget(self.pages)
+        split.addWidget(page_card)
         split.setStretchFactor(1, 1)
         root.addWidget(split, 1)
+        self.nav.setSpacing(1)
         for sec in schema.SECTIONS:
             self.nav.addItem(sec.title)
+            self.nav.item(self.nav.count() - 1).setSizeHint(QSize(0, 34))
             self.pages.addWidget(self._build_section(sec))
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
         self.nav.setCurrentRow(0)
@@ -69,7 +82,8 @@ class RecordForm(QWidget):
         bottom.addStretch()
         self.btn_back = QPushButton("返回查詢")
         self.btn_save = QPushButton("儲存並上傳")
-        self.btn_save.setStyleSheet("font-weight:bold;padding:6px 18px;")
+        self.btn_save.setObjectName("Primary")
+        self.btn_save.setMinimumWidth(140)
         self.btn_back.clicked.connect(self.back_requested)
         self.btn_save.clicked.connect(self.save_requested)
         bottom.addWidget(self.btn_back)
@@ -129,9 +143,16 @@ class RecordForm(QWidget):
     def _build_section(self, sec: schema.Section) -> QWidget:
         inner = QWidget()
         lay = QVBoxLayout(inner)
+        hb = QHBoxLayout()
+        bar = QFrame()
+        bar.setFixedSize(4, 24)
+        bar.setStyleSheet(f"background:{theme.CYAN};border-radius:2px;")
         header = QLabel(sec.title)
-        header.setStyleSheet("font-size:16px;font-weight:bold;")
-        lay.addWidget(header)
+        header.setObjectName("H2")
+        hb.addWidget(bar)
+        hb.addWidget(header)
+        hb.addStretch()
+        lay.addLayout(hb)
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         if sec.key == "profile":
@@ -144,11 +165,11 @@ class RecordForm(QWidget):
             note = QLabel("※ 病歷號、身分證字號至少填一個。號碼、姓名、生日、性別、病史屬於病人層級資料，"
                           "同一位病人的所有切片紀錄共用。")
             note.setWordWrap(True)
-            note.setStyleSheet("color:gray;")
+            note.setObjectName("Muted")
             lay.addWidget(note)
         if sec.key == "medication":
             note = QLabel("No = (-)、Yes = (+)；留空表示未記錄。")
-            note.setStyleSheet("color:gray;")
+            note.setObjectName("Muted")
             lay.addWidget(note)
         for p in sec.lab_panels:
             title, analytes = schema.LAB_PANELS[p]

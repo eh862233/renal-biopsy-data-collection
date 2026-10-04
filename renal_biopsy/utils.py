@@ -106,3 +106,13 @@ def valid_national_id(text: str) -> bool:
     digits = [first // 10, first % 10, second_val] + [int(c) for c in s[2:]]
     weights = [1, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1]
     return sum(d * w for d, w in zip(digits, weights)) % 10 == 0
+
+
+def looks_like_name(text: str) -> bool:
+    """查詢字串看起來像姓名（含中文字、空白，或全為英文字母）。"""
+    s = (text or "").strip()
+    if not s or looks_like_national_id(s):
+        return False
+    if any("一" <= ch <= "鿿" for ch in s) or " " in s:
+        return True
+    return s.isalpha() and s.isascii() and len(s) >= 2

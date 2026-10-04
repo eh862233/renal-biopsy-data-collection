@@ -219,3 +219,20 @@ def test_import_merge(db, tmp_path):
     # 再匯入一次：沒有變動
     again = db.import_items(items, "admin")
     assert again["unchanged"] == 2 and again["biopsies_new"] == 0
+
+
+def test_search_patients_by_name(db):
+    for nid, name in (("A123456789", "王小明"), ("B123456780", "王小華"), ("C123456781", "50%_test")):
+        db.save_record(new_rec(db, national_id=nid, name=name), "u")
+    assert [p["name"] for p in db.search_patients("王")] == ["王小明", "王小華"]
+    assert [p["name"] for p in db.search_patients("王小華")] == ["王小華"]
+    assert [p["name"] for p in db.search_patients("a123456789")] == ["王小明"]  # 號碼優先
+    assert [p["name"] for p in db.search_patients("%")] == ["50%_test"]      # 萬用字元當一般字元
+    assert db.search_patients("不存在") == [] and db.search_patients("  ") == []
+
+
+def test_looks_like_name():
+    from renal_biopsy.utils import looks_like_name
+    assert looks_like_name("王小明") and looks_like_name("John Smith") and looks_like_name("Chen")
+    assert not looks_like_name("12345678") and not looks_like_name("A123456789")
+    assert not looks_like_name("H12345")

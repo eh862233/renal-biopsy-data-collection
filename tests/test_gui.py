@@ -146,7 +146,7 @@ def test_search_by_national_id(app, no_dialogs, tmp_path):
     w.save()
     assert ("information", "資料已儲存並上傳。") in no_dialogs
     w.back_to_search()
-    assert "測試甲" in w.search.info.text() and w.search.table.rowCount() == 1
+    assert w.search.info_name.text() == "測試甲" and w.search.table.rowCount() == 1
 
     # 兩個號碼都清空 → 不能存
     w.open_biopsy(db.list_biopsies(db.find_patient("A123456789")["id"])[0]["id"])
@@ -163,3 +163,29 @@ def test_search_by_national_id(app, no_dialogs, tmp_path):
     assert w.search.patient["national_id"] == "A123456789"
     w.search.btn_new.click()
     assert w.form.record["patient"]["id"] == w.search.patient["id"]
+
+
+def test_search_by_name(app, no_dialogs, tmp_path):
+    db = Database(str(tmp_path / "name.db"))
+    for nid, name in (("A123456789", "王小明"), ("B123456780", "王小華"), ("C123456781", "陳大文")):
+        rec = db.empty_record(None, national_id=nid, name=name)
+        rec["biopsy"]["data"]["biopsy_date"] = "2024-01-01"
+        db.save_record(rec, "u")
+    w = MainWindow(db, "guest")
+
+    w.do_search("陳大文")  # 唯一符合 → 直接顯示
+    assert w.search.patient["national_id"] == "C123456781"
+    assert w.search.match_box.isHidden()
+
+    w.do_search("王")  # 多位符合 → 列出清單
+    assert not w.search.match_box.isHidden() and w.search.matches.rowCount() == 2
+    assert w.search.patient is None and not w.search.btn_new.isEnabled()
+    w.search.matches.selectRow(1)
+    assert w.search.patient["name"] == "王小華"
+    assert w.search.table.rowCount() == 1
+    assert not w.search.match_box.isHidden()  # 清單保留，可改選另一位
+
+    # 查無此姓名 → 以姓名建立新病人（需再填號碼）
+    w.do_search("林美玲")
+    assert w.form.widgets["name"].text() == "林美玲"
+    assert w.form.widgets["chart_no"].text() == "" and w.form.widgets["national_id"].text() == ""

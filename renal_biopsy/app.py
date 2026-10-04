@@ -6,6 +6,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from . import config
 from .db import Database
+from .ui import theme
 from .ui.login import LoginDialog
 from .ui.main_window import MainWindow
 
@@ -13,7 +14,7 @@ from .ui.main_window import MainWindow
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName(config.APP_TITLE)
-    app.setStyle("Fusion")
+    theme.apply_theme(app)
     font = QFont("Microsoft JhengHei UI", 10)
     app.setFont(font)
     app.setQuitOnLastWindowClosed(False)

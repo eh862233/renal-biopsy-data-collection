@@ -90,6 +90,7 @@ class ExportDialog(QDialog):
         bb = QDialogButtonBox()
         self.btn_count = QPushButton("預覽筆數")
         self.btn_export = QPushButton("匯出…")
+        self.btn_export.setObjectName("Primary")
         bb.addButton(self.btn_count, QDialogButtonBox.ActionRole)
         bb.addButton(self.btn_export, QDialogButtonBox.AcceptRole)
         bb.addButton(QDialogButtonBox.Close).setText("關閉")

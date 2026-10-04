@@ -2,15 +2,18 @@ import sqlite3
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+                               QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .. import config
 from ..db import ConflictError, DuplicateIdentifierError
-from ..utils import looks_like_national_id, machine_user, normalize_national_id, valid_national_id
+from ..utils import (looks_like_name, looks_like_national_id, machine_user, normalize_national_id,
+                     valid_national_id)
 from .backup_dialog import RestoreDialog, backup_now
 from .export_dialog import ExportDialog
 from .import_dialog import import_tsn
 from .record_form import RecordForm
+from . import theme
 from .search_page import SearchPage
 
 DB_ERROR_MSG = ("無法存取資料庫（可能是網路資料夾中斷，或其他電腦正在寫入）。\n"
@@ -33,36 +36,35 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{config.APP_TITLE} — {'管理者' if self.is_admin else '訪客'}")
         self.resize(1200, 820)
 
-        tb = self.addToolBar("main")
-        tb.setMovable(False)
+        self.setWindowIcon(theme.app_icon())
+        actions = []
         if self.is_admin:
-            act_export = QAction("匯出 Excel", self)
-            act_export.triggered.connect(self.export)
-            tb.addAction(act_export)
-            act_backup = QAction("立即備份", self)
-            act_backup.triggered.connect(lambda: backup_now(self, self.db, self.user))
-            tb.addAction(act_backup)
-            act_restore = QAction("從備份還原", self)
-            act_restore.triggered.connect(self.restore)
-            tb.addAction(act_restore)
-            act_import = QAction("匯入 TSN Excel", self)
-            act_import.triggered.connect(self.import_tsn)
-            tb.addAction(act_import)
-            tb.addSeparator()
+            for text, slot in (("匯出 Excel", self.export),
+                               ("立即備份", lambda: backup_now(self, self.db, self.user)),
+                               ("從備份還原", self.restore),
+                               ("匯入 TSN Excel", self.import_tsn)):
+                act = QAction(text, self)
+                act.triggered.connect(slot)
+                actions.append(act)
         act_logout = QAction("登出", self)
         act_logout.triggered.connect(self.logout)
-        tb.addAction(act_logout)
-        self.statusBar().showMessage(f"登入身分：{'管理者' if self.is_admin else '訪客'}　"
-                                     f"資料庫：{db.path}")
+        self.statusBar().showMessage(f"資料庫：{db.path}")
 
+        central = QWidget()
+        cl = QVBoxLayout(central)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(self._build_header(actions, act_logout))
         self.stack = QStackedWidget()
-        self.setCentralWidget(self.stack)
+        cl.addWidget(self.stack, 1)
+        self.setCentralWidget(central)
         self.search = SearchPage(self.is_admin)
         self.form = RecordForm()
         self.stack.addWidget(self.search)
         self.stack.addWidget(self.form)
 
         self.search.search_requested.connect(self.do_search)
+        self.search.patient_selected.connect(self.show_patient)
         self.search.open_requested.connect(self.open_biopsy)
         self.search.new_biopsy_requested.connect(self.new_biopsy)
         self.search.delete_requested.connect(self.delete_biopsy)
@@ -74,25 +76,72 @@ class MainWindow(QMainWindow):
         self.heartbeat.timeout.connect(self._beat)
         self.search.edit.setFocus()
 
+    def _build_header(self, actions, act_logout):
+        header = QFrame()
+        header.setObjectName("Header")
+        h = QHBoxLayout(header)
+        h.setContentsMargins(18, 10, 18, 10)
+        h.setSpacing(12)
+        h.addWidget(theme.logo_label(52))
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        t = QLabel(config.APP_TITLE)
+        t.setStyleSheet("font-size:19px;font-weight:800;color:#ffffff;")
+        st = QLabel("RENAL BIOPSY INTELLIGENCE REGISTRY · TSGH NEPHROLOGY")
+        st.setStyleSheet(f"font-size:10px;letter-spacing:2px;color:{theme.CYAN};")
+        titles.addWidget(t)
+        titles.addWidget(st)
+        h.addLayout(titles)
+        h.addStretch()
+        chip = QLabel(f"{'管理者' if self.is_admin else '訪客'} · {self.holder}")
+        chip.setObjectName("ChipGold" if self.is_admin else "Chip")
+        h.addWidget(chip, 0, Qt.AlignVCenter)
+        h.addSpacing(8)
+        for act in actions + [act_logout]:
+            b = QToolButton()
+            b.setDefaultAction(act)
+            b.setCursor(Qt.PointingHandCursor)
+            h.addWidget(b)
+        return header
+
     # ------------------------------------------------------------------ 查詢
     def do_search(self, term: str):
         try:
-            patient = self.db.find_patient(term)
-            biopsies = self.db.list_biopsies(patient["id"]) if patient else []
+            patients = self.db.search_patients(term)
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
             return
-        self.search.show_result(term, patient, biopsies)
-        if not patient:
-            is_id = looks_like_national_id(term)
-            kind = "身分證字號" if is_id else "病歷號"
-            r = QMessageBox.question(
-                self, "查無資料",
-                f"「{term}」目前沒有資料。\n要以此{kind}建立一位新病人嗎？\n\n"
-                f"（另一個號碼可在 Patient profile 頁補上；若{kind}判斷錯誤，也可在該頁修改）")
-            if r == QMessageBox.Yes:
-                ids = {"national_id": normalize_national_id(term)} if is_id else {"chart_no": term}
-                self._open_new(self.db.empty_record(None, **ids))
+        if len(patients) == 1:
+            self.show_patient(patients[0]["id"], term)
+            return
+        if len(patients) > 1:
+            self.search.show_matches(term, patients)
+            return
+        self.search.show_result(term, None, [])
+        if looks_like_national_id(term):
+            kind, ids = "身分證字號", {"national_id": normalize_national_id(term)}
+        elif looks_like_name(term):
+            kind, ids = "姓名", {"name": term}
+        else:
+            kind, ids = "病歷號", {"chart_no": term}
+        extra = ("請在 Patient profile 頁填寫病歷號或身分證字號（至少一個）。" if kind == "姓名" else
+                 f"另一個號碼可在 Patient profile 頁補上；若{kind}判斷錯誤，也可在該頁修改。")
+        r = QMessageBox.question(
+            self, "查無資料",
+            f"「{term}」目前沒有資料。\n要以此{kind}建立一位新病人嗎？\n\n（{extra}）")
+        if r == QMessageBox.Yes:
+            self._open_new(self.db.empty_record(None, **ids))
+
+    def show_patient(self, patient_id: int, term: str = None):
+        try:
+            p = self.db.get_patient(patient_id)
+            biopsies = self.db.list_biopsies(patient_id) if p else []
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
+            return
+        keep = term is None  # 從多位病人清單中選取時保留清單
+        self.search.show_result(term if term is not None else self.search.term, p, biopsies,
+                                keep_matches=keep)
 
     def _refresh_search(self, patient_id=None):
         """重新整理查詢頁（例如存檔、刪除後）。"""

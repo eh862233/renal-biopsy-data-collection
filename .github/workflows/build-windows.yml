@@ -26,6 +26,8 @@ jobs:
         run: >
           pyinstaller --noconfirm --onedir --windowed
           --name RenalBiopsyDB
+          --icon renal_biopsy/assets/app.ico
+          --add-data "renal_biopsy/assets;renal_biopsy/assets"
           --collect-submodules renal_biopsy
           main.py
       - name: Upload artifact

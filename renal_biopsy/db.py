@@ -183,6 +183,20 @@ class Database:
             (term, normalize_national_id(term), term)).fetchone()
         return dict(row) if row else None
 
+    def search_patients(self, term: str, limit: int = 200) -> List[Dict]:
+        """查詢病人：病歷號或身分證字號完全符合時只回傳該病人；否則以姓名部分比對（可能多位）。"""
+        exact = self.find_patient(term)
+        if exact:
+            return [exact]
+        term = (term or "").strip()
+        if not term:
+            return []
+        like = "%" + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        rows = self.conn.execute(
+            "SELECT * FROM patients WHERE name LIKE ? ESCAPE '\\' "
+            "ORDER BY name = ? DESC, name, birth_date LIMIT ?", (like, term, limit)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_patient(self, patient_id: int) -> Optional[Dict]:
         row = self.conn.execute("SELECT * FROM patients WHERE id=?", (patient_id,)).fetchone()
         return dict(row) if row else None
