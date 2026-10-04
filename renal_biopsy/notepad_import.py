@@ -254,6 +254,28 @@ class _Result:
         self.labs.setdefault(panel, {}).setdefault(item, v)
 
 
+def upcr_g_to_mg(raw: str) -> Optional[str]:
+    """醫院系統的 UPCR 單位為 g/g；本系統為 mg/g，因此 ×1000（保留 < > 符號）。"""
+    v = lab_value(raw)
+    m = re.match(r"^([<>]=?)?(\d+(?:\.\d+)?)$", v or "")
+    if not m:
+        return None
+    mg = round(float(m.group(2)) * 1000, 3)
+    return (m.group(1) or "") + (str(int(mg)) if mg.is_integer() else str(mg))
+
+
+def _set_upcr(res: "_Result", raw: str):
+    if "upcr" in res.data:
+        return
+    mg = upcr_g_to_mg(raw)
+    if mg is None:
+        if not is_missing(raw):
+            res.warnings.append(f"Spot UPCR：記事本為「{raw}」，無法判讀，請手動填寫")
+        return
+    res.data["upcr"] = mg
+    res.warnings.append(f"Spot UPCR：記事本 {strip_paren(raw)} g/g，已換算為 {mg} mg/g")
+
+
 def _yes_no(v: str, label: str, res: _Result) -> str:
     if is_missing(v):
         return ""
@@ -436,10 +458,7 @@ def parse_notepad_text(text: str) -> Dict:
             if is_missing(cell):
                 continue
             if "ratio" in h and "protein" in h or h == "upcr":
-                res.set("upcr", lab_value(cell))
-                if lab_value(cell) and float(re.sub(r"[<>=]", "", lab_value(cell))) < 100:
-                    res.warnings.append(
-                        f"Spot UPCR 記事本數值為 {cell}，系統單位為 mg/g（若原為 g/g 應 ×1000），請確認")
+                _set_upcr(res, cell)
             elif ("albumin" in h and "ratio" in h) or h == "uacr":
                 res.set("uacr", lab_value(cell))
             elif ("24" in h) and "protein" in h:
@@ -456,7 +475,10 @@ def parse_notepad_text(text: str) -> Dict:
         if m:
             res.set("ua_rbc", "Yes" if int(m.group(1)) >= 3 else "No")
     res.set("urine_routine", kv_get(upairs, "urine routine", "routine"))
-    for key, names in (("upcr", ("upcr",)), ("uacr", ("uacr",)),
+    v = kv_get(upairs, "upcr")
+    if v:
+        _set_upcr(res, v)
+    for key, names in (("uacr", ("uacr",)),
                        ("urine_24hr_protein", ("24hr urine protein", "24-hr urine protein"))):
         v = kv_get(upairs, *names)
         if v:

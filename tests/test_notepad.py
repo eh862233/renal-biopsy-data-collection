@@ -146,7 +146,7 @@ def test_parse_labs_on_biopsy_date():
     d = r["data"]
     assert d["ab_ana"] == "1:160 speckled" and d["ab_pla2r"] == "85 RU/mL" and "ab_ccp" not in d
     # 尿液表取切片日前最近的一列（2025-03-02）
-    assert d["upcr"] == "8.2" and d["urine_24hr_protein"] == "9000" and d["ua_rbc"] == "Yes"
+    assert d["upcr"] == "8200" and d["urine_24hr_protein"] == "9000" and d["ua_rbc"] == "Yes"
     assert d["urine_routine"].startswith("(2025-03-02)")
 
     w = "\n".join(r["warnings"])
@@ -156,7 +156,7 @@ def test_parse_labs_on_biopsy_date():
     assert "未提供生日（年齡 60 歲）" in w
     assert "Antibiotics" in w           # 非明確 Yes/No
     assert "理學檢查日期為 2025-06-01" in w
-    assert "Spot UPCR" in w
+    assert "Spot UPCR：記事本 8.2 g/g，已換算為 8200 mg/g" in w
 
 
 def test_encodings(tmp_path):
@@ -258,3 +258,13 @@ def test_import_name_mismatch_cancel(ui):
     w.search.btn_notepad.click()
     assert shown[-1][0] == "question" and "姓名" in shown[-1][1]
     assert w.stack.currentWidget() is w.search
+
+
+def test_upcr_conversion():
+    from renal_biopsy.notepad_import import upcr_g_to_mg
+    assert upcr_g_to_mg("19.5") == "19500"
+    assert upcr_g_to_mg("0.123 (high)") == "123"
+    assert upcr_g_to_mg("1.2345") == "1234.5"
+    assert upcr_g_to_mg("<0.15") == "<150"
+    assert upcr_g_to_mg("3.0 g/g") == "3000"
+    assert upcr_g_to_mg("-") is None and upcr_g_to_mg("1.0 - 2.0") is None
