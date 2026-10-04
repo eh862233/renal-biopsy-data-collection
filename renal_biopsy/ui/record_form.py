@@ -43,8 +43,14 @@ class RecordForm(QWidget):
         self.banner = QLabel()
         self.banner.setWordWrap(True)
         self.banner.setObjectName("Banner")
-        self.banner.hide()
-        root.addWidget(self.banner)
+        self.banner.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.banner_box = QScrollArea()
+        self.banner_box.setWidgetResizable(True)
+        self.banner_box.setFrameShape(QFrame.NoFrame)
+        self.banner_box.setMaximumHeight(170)
+        self.banner_box.setWidget(self.banner)
+        self.banner_box.hide()
+        root.addWidget(self.banner_box)
 
         # ---- 左側目錄 + 右側內容 ----
         split = QSplitter(Qt.Horizontal)
@@ -265,9 +271,9 @@ class RecordForm(QWidget):
         self.set_read_only(read_only)
         if banner:
             self.banner.setText(banner)
-            self.banner.show()
+            self.banner_box.show()
         else:
-            self.banner.hide()
+            self.banner_box.hide()
         self.refresh_title()
         self.nav.setCurrentRow(keep_page if keep_page is not None else 0)
         self._loading = False

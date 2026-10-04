@@ -1,12 +1,14 @@
+import os
 import sqlite3
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                                QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .. import config
-from ..db import ConflictError, DuplicateIdentifierError
+from ..db import ConflictError, DuplicateIdentifierError, patient_label
+from ..notepad_import import merge_into_record, parse_notepad
 from ..utils import (looks_like_name, looks_like_national_id, machine_user, normalize_national_id,
                      valid_national_id)
 from .backup_dialog import RestoreDialog, backup_now
@@ -65,6 +67,7 @@ class MainWindow(QMainWindow):
 
         self.search.search_requested.connect(self.do_search)
         self.search.patient_selected.connect(self.show_patient)
+        self.search.notepad_requested.connect(self.import_notepad)
         self.search.open_requested.connect(self.open_biopsy)
         self.search.new_biopsy_requested.connect(self.new_biopsy)
         self.search.delete_requested.connect(self.delete_biopsy)
@@ -169,6 +172,79 @@ class MainWindow(QMainWindow):
             self._refresh_search()
             return
         self._open_new(self.db.empty_record(p))
+
+    # ------------------------------------------------------------------ 醫院記事本
+    def import_notepad(self):
+        cfg = config.load_config()
+        path, _ = QFileDialog.getOpenFileName(self, "選擇醫院系統產出的記事本",
+                                              cfg.get("last_notepad_dir", ""),
+                                              "記事本 (*.txt);;所有檔案 (*)")
+        if not path:
+            return
+        cfg["last_notepad_dir"] = os.path.dirname(path)
+        config.save_config(cfg)
+        try:
+            parsed = parse_notepad(path)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, "無法讀取記事本", str(e))
+            return
+        pi = parsed["patient"]
+        try:
+            by_id = self.db.find_patient(pi["national_id"]) if pi.get("national_id") else None
+            by_chart = self.db.find_patient(pi["chart_no"]) if pi.get("chart_no") else None
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
+            return
+        if by_id and by_chart and by_id["id"] != by_chart["id"]:
+            QMessageBox.warning(
+                self, "無法匯入",
+                f"記事本的病歷號屬於「{patient_label(by_chart)}」，身分證字號卻屬於"
+                f"「{patient_label(by_id)}」，請先確認資料。")
+            return
+        patient = by_id or by_chart
+        if not patient and not pi.get("chart_no") and not pi.get("national_id"):
+            QMessageBox.information(self, "記事本沒有號碼",
+                                    "記事本中找不到病歷號或身分證字號，將建立新病人，"
+                                    "請在 Patient profile 頁補上號碼。")
+        if patient and pi.get("name") and patient.get("name") and pi["name"] != patient["name"]:
+            r = QMessageBox.question(
+                self, "姓名不一致",
+                f"記事本的姓名「{pi['name']}」與系統中此病人的姓名「{patient['name']}」不同。\n"
+                "確定是同一位病人並繼續匯入嗎？")
+            if r != QMessageBox.Yes:
+                return
+
+        bdate = parsed["data"].get("biopsy_date")
+        existing = None
+        try:
+            if patient and bdate:
+                existing = next((b for b in self.db.list_biopsies(patient["id"])
+                                 if b["biopsy_date"] == bdate), None)
+            if existing:
+                ok, who = self.db.acquire_lock(existing["id"], self.holder)
+                if not ok:
+                    QMessageBox.warning(self, "無法匯入",
+                                        f"此病人 {bdate} 的切片紀錄正由「{who}」編輯中，請稍後再匯入。")
+                    return
+                self._set_lock(existing["id"])
+                rec = self.db.load_record(existing["id"])
+            else:
+                rec = self.db.empty_record(patient)
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
+            return
+        n = merge_into_record(rec, parsed, fill_only=bool(existing))
+
+        where = (f"已有 {bdate} 的切片紀錄，只補上原本空白的欄位" if existing else
+                 "既有病人的新切片紀錄" if patient else "新病人")
+        lines = [f"已從記事本「{os.path.basename(path)}」帶入 {n} 個欄位（{where}），尚未儲存。",
+                 "請逐頁檢查內容，並到 Pathology 頁勾選病理診斷後，按「儲存並上傳」。"]
+        if parsed["warnings"]:
+            lines.append("需要確認：")
+            lines += [f"• {w}" for w in parsed["warnings"]]
+        self.form.load(rec, banner="\n".join(lines))
+        self.form.dirty = True
+        self.stack.setCurrentWidget(self.form)
 
     def _open_new(self, rec):
         self.form.load(rec)

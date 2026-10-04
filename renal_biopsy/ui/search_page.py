@@ -25,6 +25,7 @@ def _table(headers):
 
 class SearchPage(QWidget):
     search_requested = Signal(str)
+    notepad_requested = Signal()
     patient_selected = Signal(int)
     open_requested = Signal(int)
     new_biopsy_requested = Signal()
@@ -56,8 +57,15 @@ class SearchPage(QWidget):
         btn.setMinimumSize(110, 46)
         btn.setStyleSheet("border-radius:22px;font-size:16px;")
         btn.setCursor(Qt.PointingHandCursor)
+        self.btn_notepad = QPushButton("匯入醫院記事本")
+        self.btn_notepad.setMinimumHeight(46)
+        self.btn_notepad.setStyleSheet("border-radius:22px;padding:0 18px;")
+        self.btn_notepad.setCursor(Qt.PointingHandCursor)
+        self.btn_notepad.setToolTip("選擇醫院系統產出的 .txt 記事本，內容會帶入輸入表單，檢查後再儲存")
+        self.btn_notepad.clicked.connect(self.notepad_requested)
         h.addWidget(self.edit, 1)
         h.addWidget(btn)
+        h.addWidget(self.btn_notepad)
         root.addLayout(h)
         btn.clicked.connect(self._search)
         self.edit.returnPressed.connect(self._search)
