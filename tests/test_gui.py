@@ -1,0 +1,86 @@
+"""GUI 煙霧測試（無螢幕環境以 offscreen 執行）。"""
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+from PySide6.QtWidgets import QApplication, QMessageBox
+
+from renal_biopsy.db import Database
+from renal_biopsy.ui.login import LoginDialog
+from renal_biopsy.ui.main_window import MainWindow
+
+
+@pytest.fixture(scope="module")
+def app():
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def no_dialogs(monkeypatch):
+    shown = []
+    for name in ("question", "information", "warning", "critical"):
+        monkeypatch.setattr(QMessageBox, name,
+                            staticmethod(lambda *a, _n=name, **k: shown.append((_n, a[2] if len(a) > 2 else "")) or QMessageBox.Yes))
+    return shown
+
+
+def test_login(app, no_dialogs):
+    d = LoginDialog()
+    d.btn_guest.click()
+    assert d.role == "guest"
+    d = LoginDialog()
+    d.user.setText("neph88099")
+    d.pwd.setText("wrong")
+    d._admin()
+    assert d.role is None
+    d.pwd.setText("neph88099")
+    d._admin()
+    assert d.role == "admin"
+
+
+def test_create_edit_flow(app, no_dialogs, tmp_path):
+    db = Database(str(tmp_path / "g.db"))
+    w = MainWindow(db, "guest")
+    assert not w.search.btn_del.isVisible()
+    w.do_search("B123")  # 查無資料 → 自動建立新紀錄
+    assert w.stack.currentWidget() is w.form
+    f = w.form
+    f.widgets["birth_date"].setText("1980/2/3")
+    f.widgets["gender"].setCurrentText("Female")
+    f.widgets["pe_bw"].setText("60")
+    f.widgets["pe_height"].setText("160")
+    assert f.widgets["pe_bmi"].text() == "23.4"
+
+    # 未填切片日期 → 不能儲存
+    w.save()
+    assert db.get_patient("B123") is None
+    assert "必填" in no_dialogs[-1][1]
+
+    f.widgets["biopsy_date"].setText("2024-05-06")
+    f.lab_tables["chem"].add_row("2024/05/05", {"Cr": "1.8"})
+    f.dx_group.boxes["Membranous nephropathy"].setChecked(True)
+    f.widgets["path_lm"].setPlainText("thickened GBM")
+    w.save()
+    assert ("information", "資料已儲存並上傳。") in no_dialogs
+    assert f.widgets["age"].text() == "44"
+    bid = f.record["biopsy"]["id"]
+    rec = db.load_record(bid)
+    assert rec["patient"]["birth_date"] == "1980-02-03"
+    assert rec["labs"][0]["lab_date"] == "2024-05-05"
+    assert w.locked_id == bid
+
+    # 另一台電腦開啟同一筆 → 唯讀
+    db2 = Database(db.path)
+    w2 = MainWindow(db2, "admin")
+    w2.holder = "other@PC2"
+    w2.open_biopsy(bid)
+    assert w2.form.read_only and not w2.form.btn_save.isEnabled()
+
+    # 修改後再存
+    f.widgets["path_if"].setPlainText("IgG 3+")
+    w.save()
+    assert db.load_record(bid)["biopsy"]["version"] == 2
+    w.back_to_search()
+    assert w.locked_id is None
+    assert w.search.table.rowCount() == 1
