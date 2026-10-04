@@ -8,9 +8,9 @@
 """
 import json
 import os
-import shutil
 import sqlite3
 from contextlib import contextmanager
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -87,6 +87,9 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=DELETE")
         self.conn.execute("PRAGMA synchronous=FULL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self._ensure_schema()
+
+    def _ensure_schema(self):
         with self.tx():
             for stmt in DDL.strip().split(";"):
                 if stmt.strip():
@@ -334,27 +337,122 @@ class Database:
             out.append(rec)
         return out
 
-    # ------------------------------------------------------------------ 備份
+    # ------------------------------------------------------------------ 備份 / 還原
+    def backup_folder(self) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(self.path)), "backups")
+
+    def _copy_to(self, dest: str):
+        """用 SQLite 線上備份 API 複製資料庫（不需要其他人關閉程式）。"""
+        os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+        tmp = dest + ".tmp"
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        bconn = sqlite3.connect(tmp)
+        try:
+            self.conn.backup(bconn)
+        finally:
+            bconn.close()
+        os.replace(tmp, dest)
+
     def auto_backup(self, keep: int = 30) -> Optional[str]:
         """每天第一次開啟時，在資料庫旁的 backups 資料夾建立一份備份。"""
         today = datetime.now().strftime("%Y%m%d")
         row = self.conn.execute("SELECT value FROM meta WHERE key='last_backup'").fetchone()
         if row and row["value"] == today:
             return None
-        folder = os.path.join(os.path.dirname(os.path.abspath(self.path)), "backups")
-        os.makedirs(folder, exist_ok=True)
+        folder = self.backup_folder()
         dest = os.path.join(folder, f"renal_biopsy_{today}.db")
-        bconn = sqlite3.connect(dest)
-        try:
-            self.conn.backup(bconn)
-        finally:
-            bconn.close()
+        self._copy_to(dest)
         with self.tx() as c:
             c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('last_backup',?)", (today,))
-        files = sorted(f for f in os.listdir(folder) if f.startswith("renal_biopsy_"))
+        files = sorted(f for f in os.listdir(folder)
+                       if f.startswith("renal_biopsy_") and f.endswith(".db"))
         for old in files[:-keep]:
             try:
                 os.remove(os.path.join(folder, old))
             except OSError:
                 pass
         return dest
+
+    def backup_to(self, dest: str, user: str) -> Dict:
+        """立即備份到指定檔案（例如隨身碟），完成後驗證並回傳備份內容摘要。"""
+        if os.path.exists(dest) and _same_file(dest, self.path):
+            raise ValueError("不能把備份存成目前正在使用的資料庫檔。")
+        self._copy_to(dest)
+        info = inspect_backup(dest)
+        with self.tx():
+            self._audit(user, "backup", detail=dest)
+        return info
+
+    def active_locks(self, exclude_holder: str = "") -> List[str]:
+        """目前（未逾時）正在編輯紀錄的其他電腦。"""
+        limit = (datetime.now() - timedelta(minutes=LOCK_TIMEOUT_MIN)).strftime("%Y-%m-%d %H:%M:%S")
+        rows = self.conn.execute(
+            "SELECT DISTINCT holder FROM locks WHERE heartbeat >= ? AND holder != ?",
+            (limit, exclude_holder)).fetchall()
+        return [r["holder"] for r in rows]
+
+    def restore_from(self, src: str, user: str) -> str:
+        """用備份檔取代目前資料庫內容。
+
+        還原前會先把目前的資料存一份到 backups/before_restore_*.db，
+        萬一選錯備份也可以再還原回來。回傳該安全備份的路徑。
+        """
+        if _same_file(src, self.path):
+            raise ValueError("選擇的檔案就是目前正在使用的資料庫。")
+        inspect_backup(src)  # 不是有效備份時丟出 ValueError
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safety = os.path.join(self.backup_folder(), f"before_restore_{stamp}.db")
+        n = 1
+        while os.path.exists(safety):  # 絕不覆蓋既有檔案（可能正是要還原的那個）
+            n += 1
+            safety = os.path.join(self.backup_folder(), f"before_restore_{stamp}_{n}.db")
+        self._copy_to(safety)
+        sconn = sqlite3.connect(_ro_uri(src), uri=True)
+        try:
+            sconn.backup(self.conn)
+        finally:
+            sconn.close()
+        self._ensure_schema()  # 舊版備份可能缺少新資料表
+        with self.tx() as c:
+            c.execute("DELETE FROM locks")
+            c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES ('last_backup',?)",
+                      (datetime.now().strftime("%Y%m%d"),))
+            self._audit(user, "restore", detail=f"from {src}; previous data saved to {safety}")
+        return safety
+
+
+def _same_file(a: str, b: str) -> bool:
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def _ro_uri(path: str) -> str:
+    return Path(os.path.abspath(path)).as_uri() + "?mode=ro"
+
+
+def inspect_backup(path: str) -> Dict:
+    """檢查檔案是否為本程式的有效資料庫，回傳病人數、切片數與最後修改時間。"""
+    if not os.path.isfile(path):
+        raise ValueError(f"找不到檔案：{path}")
+    try:
+        conn = sqlite3.connect(_ro_uri(path), uri=True)
+    except sqlite3.Error as e:
+        raise ValueError(f"無法開啟檔案：{e}")
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"patients", "biopsies"} <= tables:
+            raise ValueError("這個檔案不是本程式的資料庫備份。")
+        if conn.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise ValueError("備份檔已損壞，無法使用。")
+        return {
+            "patients": conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0],
+            "biopsies": conn.execute("SELECT COUNT(*) FROM biopsies").fetchone()[0],
+            "last_updated": conn.execute("SELECT MAX(updated_at) FROM biopsies").fetchone()[0] or "",
+        }
+    except sqlite3.DatabaseError as e:
+        raise ValueError(f"這個檔案不是有效的資料庫：{e}")
+    finally:
+        conn.close()

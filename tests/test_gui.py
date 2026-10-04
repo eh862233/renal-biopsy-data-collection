@@ -84,3 +84,51 @@ def test_create_edit_flow(app, no_dialogs, tmp_path):
     w.back_to_search()
     assert w.locked_id is None
     assert w.search.table.rowCount() == 1
+
+
+def test_backup_and_restore_ui(app, no_dialogs, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from renal_biopsy.ui import backup_dialog
+    from renal_biopsy.ui.backup_dialog import RestoreDialog
+
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    db = Database(str(tmp_path / "share" / "r.db"))
+    guest = MainWindow(db, "guest")
+    names = [a.text() for a in guest.findChildren(type(guest.menuBar().addAction("x")))]
+    assert "立即備份" not in names and "從備份還原" not in names
+
+    w = MainWindow(db, "admin")
+    w.do_search("C1")
+    w.form.widgets["biopsy_date"].setText("2024-01-01")
+    w.save()
+    w.back_to_search()
+
+    # 立即備份到「隨身碟」
+    usb = tmp_path / "usb" / "bk.db"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", staticmethod(lambda *a, **k: (str(usb), "")))
+    backup_dialog.backup_now(w, db, w.user)
+    assert usb.exists()
+    assert no_dialogs[-1][0] == "information"
+
+    # 新增資料後還原
+    w.do_search("C2")
+    w.form.widgets["biopsy_date"].setText("2024-02-02")
+    w.save()
+    assert w.stack.currentWidget() is w.form  # 正在編輯 → 還原時會先回到查詢頁
+    monkeypatch.setattr(RestoreDialog, "exec", lambda self: (setattr(self, "selected", str(usb)),
+                                                             RestoreDialog.Accepted)[1])
+    w.restore()
+    assert db.get_patient("C2") is None and db.get_patient("C1") is not None
+    assert w.stack.currentWidget() is w.search
+
+    # 其他電腦正在編輯 → 拒絕還原
+    bid = db.list_biopsies("C1")[0]["id"]
+    db.acquire_lock(bid, "someone@PC9")
+    w.restore()
+    assert "someone@PC9" in no_dialogs[-1][1]
+
+    # 對話框能列出備份資料夾中的檔案（含還原前自動備份）
+    dlg = RestoreDialog(db)
+    assert dlg.table.rowCount() >= 1
+    dlg.table.selectRow(0)
+    assert "位病人" in dlg.info.text()

@@ -3,7 +3,7 @@ import os
 import pytest
 from openpyxl import load_workbook
 
-from renal_biopsy.db import ConflictError, Database
+from renal_biopsy.db import ConflictError, Database, inspect_backup
 from renal_biopsy.export import export_records, pick_lab_row
 from renal_biopsy.utils import calc_age, calc_bmi, normalize_date, to_number
 
@@ -164,3 +164,51 @@ def test_backup(db):
     dest = db.auto_backup()
     assert dest and os.path.exists(dest)
     assert db.auto_backup() is None  # 同一天只備份一次
+
+
+def test_backup_now_and_restore(db, tmp_path):
+    db.save_record(make_record(db, "A001", "2024-03-01"), "u")
+    usb = tmp_path / "usb" / "backup.db"
+    info = db.backup_to(str(usb), "admin")
+    assert info["patients"] == 1 and info["biopsies"] == 1
+
+    # 備份後又新增、刪除資料
+    db.save_record(make_record(db, "A002", "2024-04-01"), "u")
+    bid = db.list_biopsies("A001")[0]["id"]
+    db.delete_biopsy(bid, "admin")
+    assert db.get_patient("A001") is None
+
+    db.acquire_lock(db.save_record(make_record(db, "A003", "2024-05-01"), "u"), "pc1")
+    safety = db.restore_from(str(usb), "admin")
+    assert db.get_patient("A001") is not None
+    assert db.get_patient("A002") is None
+    assert db.active_locks() == []  # 還原後清除編輯鎖
+    assert db.conn.execute("SELECT action FROM audit ORDER BY id DESC").fetchone()[0] == "restore"
+
+    # 還原前的資料有被保留，可以再還原回去
+    assert inspect_backup(safety)["patients"] == 2
+    db.restore_from(safety, "admin")
+    assert db.get_patient("A002") is not None and db.get_patient("A001") is None
+
+
+def test_restore_rejects_bad_files(db, tmp_path):
+    bad = tmp_path / "notes.db"
+    bad.write_text("hello")
+    with pytest.raises(ValueError):
+        db.restore_from(str(bad), "admin")
+    import sqlite3
+    other = tmp_path / "other.db"
+    sqlite3.connect(other).execute("CREATE TABLE x(a)").connection.close()
+    with pytest.raises(ValueError):
+        db.restore_from(str(other), "admin")
+    with pytest.raises(ValueError):
+        db.restore_from(db.path, "admin")
+    with pytest.raises(ValueError):
+        db.restore_from(str(tmp_path / "missing.db"), "admin")
+
+
+def test_active_locks(db):
+    bid = db.save_record(make_record(db, "A001", "2024-03-01"), "u")
+    db.acquire_lock(bid, "pc2")
+    assert db.active_locks("pc1") == ["pc2"]
+    assert db.active_locks("pc2") == []

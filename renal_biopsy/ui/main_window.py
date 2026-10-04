@@ -1,12 +1,13 @@
 import sqlite3
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
 from .. import config
 from ..db import ConflictError
 from ..utils import machine_user
+from .backup_dialog import RestoreDialog, backup_now
 from .export_dialog import ExportDialog
 from .record_form import RecordForm
 from .search_page import SearchPage
@@ -37,6 +38,13 @@ class MainWindow(QMainWindow):
             act_export = QAction("匯出 Excel", self)
             act_export.triggered.connect(self.export)
             tb.addAction(act_export)
+            act_backup = QAction("立即備份", self)
+            act_backup.triggered.connect(lambda: backup_now(self, self.db, self.user))
+            tb.addAction(act_backup)
+            act_restore = QAction("從備份還原", self)
+            act_restore.triggered.connect(self.restore)
+            tb.addAction(act_restore)
+            tb.addSeparator()
         act_logout = QAction("登出", self)
         act_logout.triggered.connect(self.logout)
         tb.addAction(act_logout)
@@ -199,6 +207,42 @@ class MainWindow(QMainWindow):
 
     def export(self):
         ExportDialog(self.db, self.user, self).exec()
+
+    def restore(self):
+        if not self.is_admin:
+            return
+        if self.stack.currentWidget() is self.form:
+            if not self._confirm_leave():
+                return
+            self._release_lock()
+            self.stack.setCurrentWidget(self.search)
+        try:
+            others = self.db.active_locks(self.holder)
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
+            return
+        if others:
+            QMessageBox.warning(self, "暫時無法還原",
+                                "以下電腦正在編輯資料，請等對方關閉紀錄後再還原：\n\n"
+                                + "\n".join(others))
+            return
+        dlg = RestoreDialog(self.db, self)
+        if dlg.exec() != RestoreDialog.Accepted or not dlg.selected:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            safety = self.db.restore_from(dlg.selected, self.user)
+        except (ValueError, OSError, sqlite3.Error) as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.critical(self, "還原失敗", f"還原失敗，資料沒有變動：\n{e}")
+            return
+        QApplication.restoreOverrideCursor()
+        self.search.edit.clear()
+        self.search.show_result(None, None, [])
+        QMessageBox.information(
+            self, "還原完成",
+            f"已從備份還原：\n{dlg.selected}\n\n還原前的資料已另存為：\n{safety}\n"
+            "（若選錯，可再用「從備份還原」選這個檔案還原回來）")
 
     # ------------------------------------------------------------------ 鎖
     def _set_lock(self, biopsy_id):
