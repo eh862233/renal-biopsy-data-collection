@@ -154,8 +154,9 @@ def test_query_and_export(db, tmp_path):
 
 def test_pick_lab_row():
     rows = [{"lab_date": "2024-01-01"}, {"lab_date": "2024-02-01"}, {"lab_date": "2024-03-01"}]
-    assert pick_lab_row(rows, "2024-02-15")["lab_date"] == "2024-02-01"
-    assert pick_lab_row(rows, "2023-12-01")["lab_date"] == "2024-01-01"
+    assert pick_lab_row(rows, "2024-02-01")["lab_date"] == "2024-02-01"
+    assert pick_lab_row(rows, "2024-02-15") is None  # 切片當天沒抽血 → 留空
+    assert pick_lab_row(rows, "") is None
     assert pick_lab_row([], "2024-01-01") is None
 
 

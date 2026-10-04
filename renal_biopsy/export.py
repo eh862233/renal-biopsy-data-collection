@@ -1,8 +1,7 @@
 """匯出 Excel。
 
 工作表：
-  Biopsies   每次切片一列；抽血數值取「最接近切片日」的那一次
-             （優先取切片日當天或之前最近的一次，沒有才取之後最早的一次）
+  Biopsies   每次切片一列；抽血數值只取「切片日當天」的那一次（當天沒抽則留空）
   Labs_all   所有抽血紀錄（每個日期一列），方便做追蹤分析
   篩選條件   匯出時間、匯出者與篩選條件
 """
@@ -19,15 +18,11 @@ HEADER_FILL = PatternFill("solid", fgColor="DDEBF7")
 
 
 def pick_lab_row(rows: List[Dict], biopsy_date: str) -> Optional[Dict]:
-    if not rows:
-        return None
-    dated = sorted((r for r in rows if r.get("lab_date")), key=lambda r: r["lab_date"])
-    if not dated:
-        return rows[0]
+    """取切片日當天的抽血紀錄；當天沒有就回傳 None（Excel 留空）。"""
     if not biopsy_date:
-        return dated[-1]
-    before = [r for r in dated if r["lab_date"] <= biopsy_date]
-    return before[-1] if before else dated[0]
+        return None
+    same_day = [r for r in rows if r.get("lab_date") == biopsy_date]
+    return same_day[-1] if same_day else None
 
 
 def _dx_col(dx: str) -> str:
