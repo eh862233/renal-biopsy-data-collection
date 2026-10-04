@@ -1,3 +1,5 @@
+import html
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
@@ -6,19 +8,20 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLab
 class SearchPage(QWidget):
     search_requested = Signal(str)
     open_requested = Signal(int)
-    new_biopsy_requested = Signal(str)
+    new_biopsy_requested = Signal()
     delete_requested = Signal(int)
 
     def __init__(self, is_admin: bool, parent=None):
         super().__init__(parent)
-        self.chart_no = ""
+        self.term = ""
+        self.patient = None
         root = QVBoxLayout(self)
-        title = QLabel("輸入病歷號碼查詢")
+        title = QLabel("輸入病歷號或身分證字號查詢")
         title.setStyleSheet("font-size:18px;font-weight:bold;")
         root.addWidget(title)
         h = QHBoxLayout()
         self.edit = QLineEdit()
-        self.edit.setPlaceholderText("病歷號碼 (Chart No.)")
+        self.edit.setPlaceholderText("病歷號 (Chart No.) 或 身分證字號 (National ID)")
         self.edit.setStyleSheet("font-size:16px;padding:4px;")
         btn = QPushButton("查詢")
         btn.setMinimumWidth(90)
@@ -51,7 +54,7 @@ class SearchPage(QWidget):
         self.btn_del = QPushButton("刪除選取的紀錄")
         self.btn_del.setVisible(is_admin)
         self.btn_open.clicked.connect(self._open)
-        self.btn_new.clicked.connect(lambda: self.new_biopsy_requested.emit(self.chart_no))
+        self.btn_new.clicked.connect(self.new_biopsy_requested)
         self.btn_del.clicked.connect(self._delete)
         bh.addWidget(self.btn_open)
         bh.addWidget(self.btn_new)
@@ -81,21 +84,23 @@ class SearchPage(QWidget):
         if bid is not None:
             self.delete_requested.emit(bid)
 
-    def show_result(self, chart_no, patient, biopsies):
-        self.chart_no = chart_no or ""
+    def show_result(self, term, patient, biopsies):
+        self.term = term or ""
+        self.patient = patient
         self.table.setRowCount(0)
         has = bool(patient)
         for w in (self.table, self.btn_open, self.btn_new, self.btn_del):
             w.setEnabled(has)
-        if chart_no is None:
+        if term is None:
             self.info.setText("")
             return
         if not has:
-            self.info.setText(f"病歷號 <b>{chart_no}</b> 查無資料。")
+            self.info.setText(f"「<b>{html.escape(term)}</b>」查無資料。")
             return
+        e = lambda k: html.escape(patient.get(k) or "—")
         self.info.setText(
-            f"病歷號 <b>{chart_no}</b>　性別：{patient.get('gender') or '—'}　"
-            f"生日：{patient.get('birth_date') or '—'}　共 {len(biopsies)} 次切片紀錄"
+            f"<b>{e('name')}</b>　病歷號：<b>{e('chart_no')}</b>　身分證字號：<b>{e('national_id')}</b><br>"
+            f"性別：{e('gender')}　生日：{e('birth_date')}　共 {len(biopsies)} 次切片紀錄"
             "（雙擊可開啟）")
         for b in biopsies:
             r = self.table.rowCount()

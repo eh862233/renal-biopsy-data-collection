@@ -54,7 +54,7 @@ def test_create_edit_flow(app, no_dialogs, tmp_path):
 
     # 未填切片日期 → 不能儲存
     w.save()
-    assert db.get_patient("B123") is None
+    assert db.find_patient("B123") is None
     assert "必填" in no_dialogs[-1][1]
 
     f.widgets["biopsy_date"].setText("2024-05-06")
@@ -118,11 +118,11 @@ def test_backup_and_restore_ui(app, no_dialogs, tmp_path, monkeypatch):
     monkeypatch.setattr(RestoreDialog, "exec", lambda self: (setattr(self, "selected", str(usb)),
                                                              RestoreDialog.Accepted)[1])
     w.restore()
-    assert db.get_patient("C2") is None and db.get_patient("C1") is not None
+    assert db.find_patient("C2") is None and db.find_patient("C1") is not None
     assert w.stack.currentWidget() is w.search
 
     # 其他電腦正在編輯 → 拒絕還原
-    bid = db.list_biopsies("C1")[0]["id"]
+    bid = db.list_biopsies(db.find_patient("C1")["id"])[0]["id"]
     db.acquire_lock(bid, "someone@PC9")
     w.restore()
     assert "someone@PC9" in no_dialogs[-1][1]
@@ -132,3 +132,34 @@ def test_backup_and_restore_ui(app, no_dialogs, tmp_path, monkeypatch):
     assert dlg.table.rowCount() >= 1
     dlg.table.selectRow(0)
     assert "位病人" in dlg.info.text()
+
+
+def test_search_by_national_id(app, no_dialogs, tmp_path):
+    db = Database(str(tmp_path / "n.db"))
+    w = MainWindow(db, "guest")
+    w.do_search("a123456789")  # 查無資料 → 以身分證字號建立新病人
+    f = w.form
+    assert f.widgets["national_id"].text() == "A123456789"
+    assert f.widgets["chart_no"].text() == ""
+    f.widgets["name"].setText("測試甲")
+    f.widgets["biopsy_date"].setText("2024-05-06")
+    w.save()
+    assert ("information", "資料已儲存並上傳。") in no_dialogs
+    w.back_to_search()
+    assert "測試甲" in w.search.info.text() and w.search.table.rowCount() == 1
+
+    # 兩個號碼都清空 → 不能存
+    w.open_biopsy(db.list_biopsies(db.find_patient("A123456789")["id"])[0]["id"])
+    f.widgets["national_id"].setText("")
+    w.save()
+    assert "至少要填一個" in no_dialogs[-1][1]
+
+    # 補上病歷號後，用病歷號也查得到；新增第二次切片
+    f.widgets["national_id"].setText("A123456789")
+    f.widgets["chart_no"].setText("5566")
+    w.save()
+    w.back_to_search()
+    w.do_search("5566")
+    assert w.search.patient["national_id"] == "A123456789"
+    w.search.btn_new.click()
+    assert w.form.record["patient"]["id"] == w.search.patient["id"]

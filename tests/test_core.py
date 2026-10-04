@@ -3,7 +3,7 @@ import os
 import pytest
 from openpyxl import load_workbook
 
-from renal_biopsy.db import ConflictError, Database, inspect_backup
+from renal_biopsy.db import ConflictError, Database, DuplicateIdentifierError, inspect_backup
 from renal_biopsy.export import export_records, pick_lab_row
 from renal_biopsy.utils import calc_age, calc_bmi, normalize_date, to_number
 
@@ -16,7 +16,7 @@ def db(tmp_path):
 
 
 def make_record(db, chart, date, gender="Male", birth="1970-05-01", dx=("IgA nephropathy",)):
-    rec = db.empty_record(chart)
+    rec = db.empty_record(db.find_patient(chart), chart_no=chart)
     rec["patient"].update(birth_date=birth, gender=gender)
     rec["biopsy"]["data"]["biopsy_date"] = date
     rec["biopsy"]["diagnoses"] = list(dx)
@@ -43,7 +43,7 @@ def test_create_and_reload(db):
     rec = make_record(db, "A001", "2024-03-01")
     rec["images"] = [{"filename": "us.png", "data": b"\x89PNG"}]
     bid = db.save_record(rec, "tester")
-    assert db.get_patient("A001")["gender"] == "Male"
+    assert db.find_patient("A001")["gender"] == "Male"
     loaded = db.load_record(bid)
     assert loaded["biopsy"]["data"]["biopsy_date"] == "2024-03-01"
     assert loaded["biopsy"]["data"]["pe_consciousness"] == "clear"  # 預設值
@@ -63,7 +63,7 @@ def test_create_and_reload(db):
 def test_multiple_biopsies_per_patient(db):
     db.save_record(make_record(db, "A001", "2020-01-01"), "u")
     db.save_record(make_record(db, "A001", "2024-01-01"), "u")
-    assert [b["biopsy_date"] for b in db.list_biopsies("A001")] == ["2020-01-01", "2024-01-01"]
+    assert [b["biopsy_date"] for b in db.list_biopsies(db.find_patient("A001")["id"])] == ["2020-01-01", "2024-01-01"]
 
 
 def test_conflict_detection(db):
@@ -81,7 +81,7 @@ def test_conflict_detection(db):
 def test_patient_conflict_only_when_patient_changed(db):
     bid = db.save_record(make_record(db, "A001", "2024-03-01"), "u")
     a = db.load_record(bid)
-    other = db.empty_record("A001")
+    other = db.empty_record(db.find_patient("A001"))
     other["biopsy"]["data"]["biopsy_date"] = "2025-01-01"
     other["patient"]["past_history"] = "DM"
     db.save_record(other, "userB")
@@ -98,7 +98,7 @@ def test_new_patient_race(db):
     r1 = make_record(db, "A001", "2024-03-01")
     r2 = make_record(db, "A001", "2024-03-02", gender="Female")
     db.save_record(r1, "u1")
-    with pytest.raises(ConflictError):
+    with pytest.raises(DuplicateIdentifierError):
         db.save_record(r2, "u2")
 
 
@@ -118,7 +118,7 @@ def test_locks(db, tmp_path):
 def test_delete(db):
     bid = db.save_record(make_record(db, "A001", "2024-03-01"), "u")
     db.delete_biopsy(bid, "admin")
-    assert db.get_patient("A001") is None
+    assert db.find_patient("A001") is None
 
 
 def test_query_and_export(db, tmp_path):
@@ -174,21 +174,21 @@ def test_backup_now_and_restore(db, tmp_path):
 
     # 備份後又新增、刪除資料
     db.save_record(make_record(db, "A002", "2024-04-01"), "u")
-    bid = db.list_biopsies("A001")[0]["id"]
+    bid = db.list_biopsies(db.find_patient("A001")["id"])[0]["id"]
     db.delete_biopsy(bid, "admin")
-    assert db.get_patient("A001") is None
+    assert db.find_patient("A001") is None
 
     db.acquire_lock(db.save_record(make_record(db, "A003", "2024-05-01"), "u"), "pc1")
     safety = db.restore_from(str(usb), "admin")
-    assert db.get_patient("A001") is not None
-    assert db.get_patient("A002") is None
+    assert db.find_patient("A001") is not None
+    assert db.find_patient("A002") is None
     assert db.active_locks() == []  # 還原後清除編輯鎖
     assert db.conn.execute("SELECT action FROM audit ORDER BY id DESC").fetchone()[0] == "restore"
 
     # 還原前的資料有被保留，可以再還原回去
     assert inspect_backup(safety)["patients"] == 2
     db.restore_from(safety, "admin")
-    assert db.get_patient("A002") is not None and db.get_patient("A001") is None
+    assert db.find_patient("A002") is not None and db.find_patient("A001") is None
 
 
 def test_restore_rejects_bad_files(db, tmp_path):

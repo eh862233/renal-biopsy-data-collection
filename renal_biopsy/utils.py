@@ -74,3 +74,35 @@ def machine_user() -> str:
 
 def now_str() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# 身分證／居留證首字母對應數字
+_TW_LETTERS = {c: v for c, v in zip(
+    "ABCDEFGHJKLMNPQRSTUVXYWZIO",
+    [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+     31, 32, 33, 34, 35])}
+
+
+def normalize_national_id(text: str) -> str:
+    return (text or "").strip().upper()
+
+
+def looks_like_national_id(text: str) -> bool:
+    """看起來像身分證／居留證字號（用於判斷查詢字串是哪一種號碼）。"""
+    return bool(re.fullmatch(r"[A-Z][A-Z0-9]\d{8}", normalize_national_id(text)))
+
+
+def valid_national_id(text: str) -> bool:
+    """檢查台灣身分證字號、新式／舊式居留證號的檢查碼。"""
+    s = normalize_national_id(text)
+    if not re.fullmatch(r"[A-Z][12890A-D]\d{8}", s):
+        return False
+    first = _TW_LETTERS[s[0]]
+    second = s[1]
+    if second.isalpha():  # 舊式居留證：第二碼字母取個位數
+        second_val = _TW_LETTERS[second] % 10
+    else:
+        second_val = int(second)
+    digits = [first // 10, first % 10, second_val] + [int(c) for c in s[2:]]
+    weights = [1, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1]
+    return sum(d * w for d, w in zip(digits, weights)) % 10 == 0

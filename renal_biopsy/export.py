@@ -32,7 +32,9 @@ def _dx_col(dx: str) -> str:
 def build_columns(sections: Optional[List[str]] = None):
     """回傳 [(欄位標題, 取值函式)]。sections 為要匯出的 section key，None 表示全部。"""
     cols = [
-        ("Chart No.", lambda r: r["patient"]["chart_no"]),
+        ("Chart No.", lambda r: r["patient"].get("chart_no") or ""),
+        ("National ID", lambda r: r["patient"].get("national_id") or ""),
+        ("Name", lambda r: r["patient"].get("name") or ""),
         ("Birth date", lambda r: r["patient"].get("birth_date", "")),
         ("Gender", lambda r: r["patient"].get("gender", "")),
         ("Age", lambda r: to_number(calc_age(r["patient"].get("birth_date", ""),
@@ -125,11 +127,14 @@ def export_records(records: List[Dict], path: str, criteria: Dict[str, str],
     analytes = []
     for _, (_, names) in schema.LAB_PANELS.items():
         analytes += names
-    _write_header(ws2, ["Chart No.", "Biopsy date", "Panel", "Lab date"] + analytes)
+    _write_header(ws2, ["Chart No.", "National ID", "Name", "Biopsy date", "Panel", "Lab date"]
+                  + analytes)
     for rec in records:
         for lab in sorted(rec["labs"], key=lambda l: (l["panel"], l.get("lab_date", ""))):
             names = schema.LAB_PANELS.get(lab["panel"], ("", []))[1]
-            row = [rec["patient"]["chart_no"], rec["biopsy"]["data"].get("biopsy_date", ""),
+            pt = rec["patient"]
+            row = [pt.get("chart_no") or "", pt.get("national_id") or "", pt.get("name") or "",
+                   rec["biopsy"]["data"].get("biopsy_date", ""),
                    schema.LAB_PANELS.get(lab["panel"], (lab["panel"],))[0], lab.get("lab_date", "")]
             row += [to_number(lab["values"].get(a, "")) if a in names else None for a in analytes]
             ws2.append(row)

@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (QComboBox, QFormLayout, QFrame, QGroupBox, QHBoxL
                                QSplitter, QStackedWidget, QVBoxLayout, QWidget)
 
 from .. import schema
-from ..utils import calc_age, calc_bmi, normalize_date
+from ..db import patient_label
+from ..utils import calc_age, calc_bmi, normalize_date, normalize_national_id
 from .widgets import CheckGroup, ImageList, LabTable
 
 
@@ -89,7 +90,7 @@ class RecordForm(QWidget):
             w.addItems(f.options)
             w.currentIndexChanged.connect(self._mark_dirty)
         elif f.type == schema.CHECKS:
-            w = CheckGroup(f.options)
+            w = CheckGroup(f.options, columns=1 if max(map(len, f.options)) > 30 else 2)
             w.changed.connect(self._mark_dirty)
         elif f.type == schema.COMPUTED:
             w = QLineEdit()
@@ -134,16 +135,15 @@ class RecordForm(QWidget):
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         if sec.key == "profile":
-            self.chart_label = QLabel()
-            self.chart_label.setStyleSheet("font-weight:bold;")
-            form.addRow("Chart No.", self.chart_label)
             for f in schema.PATIENT_FIELDS:
                 self._row(form, f)
         for f in sec.fields:
             self._row(form, f)
         lay.addLayout(form)
         if sec.key == "profile":
-            note = QLabel("※ 生日、性別、病史屬於病人層級資料，同一病歷號碼的所有切片紀錄共用。")
+            note = QLabel("※ 病歷號、身分證字號至少填一個。號碼、姓名、生日、性別、病史屬於病人層級資料，"
+                          "同一位病人的所有切片紀錄共用。")
+            note.setWordWrap(True)
             note.setStyleSheet("color:gray;")
             lay.addWidget(note)
         if sec.key == "medication":
@@ -230,7 +230,6 @@ class RecordForm(QWidget):
         self._loading = True
         self.record = copy.deepcopy(record)
         p, b = self.record["patient"], self.record["biopsy"]
-        self.chart_label.setText(p["chart_no"])
         for f in schema.PATIENT_FIELDS:
             self._set(f.key, p.get(f.key, ""))
         for f in schema.all_biopsy_fields():
@@ -255,11 +254,12 @@ class RecordForm(QWidget):
 
     def refresh_title(self):
         p, b = self.record["patient"], self.record["biopsy"]
+        who = patient_label(p) or "新病人"
         if b.get("id") is None:
-            self.title.setText(f"新增切片紀錄 — 病歷號 {p['chart_no']}")
+            self.title.setText(f"新增切片紀錄 — {who}")
             self.status.setText("尚未儲存")
         else:
-            self.title.setText(f"切片紀錄 — 病歷號 {p['chart_no']}"
+            self.title.setText(f"切片紀錄 — {who}"
                                f"（切片日 {b['data'].get('biopsy_date') or '未填'}）")
             if b.get("updated_at"):
                 self.status.setText(f"最後修改：{b['updated_at']}  {b.get('updated_by', '')}")
@@ -303,6 +303,9 @@ class RecordForm(QWidget):
 
         for f in schema.PATIENT_FIELDS:
             p[f.key] = check(f, self._get(f.key))
+        p["national_id"] = normalize_national_id(p["national_id"])
+        if not p["chart_no"] and not p["national_id"]:
+            errors.insert(0, "病歷號與身分證字號至少要填一個（在「Patient profile」頁）。")
         data = {}
         for f in schema.all_biopsy_fields():
             if f.type == schema.COMPUTED:

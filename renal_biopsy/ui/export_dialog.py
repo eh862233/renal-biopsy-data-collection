@@ -71,11 +71,11 @@ class ExportDialog(QDialog):
         f.addRow("病理診斷\n（符合任一）", self.dx_list)
 
         self.charts = QLineEdit()
-        self.charts.setPlaceholderText("多個病歷號以逗號或空白分隔")
-        f.addRow("病歷號", self.charts)
+        self.charts.setPlaceholderText("病歷號或身分證字號，多個以逗號或空白分隔")
+        f.addRow("病歷號／身分證", self.charts)
         root.addWidget(cond)
 
-        secs = QGroupBox("匯出欄位（病歷號、性別、年齡、切片日期、診斷一律包含）")
+        secs = QGroupBox("匯出欄位（病歷號、身分證字號、姓名、性別、年齡、切片日期、診斷一律包含）")
         g = QGridLayout(secs)
         self.sec_boxes = {}
         for i, s in enumerate(schema.SECTIONS):
@@ -120,7 +120,7 @@ class ExportDialog(QDialog):
         charts = [c for c in self.charts.text().replace(",", " ").split() if c]
         if charts:
             kw["chart_nos"] = charts
-            crit["病歷號"] = ", ".join(charts)
+            crit["病歷號／身分證"] = ", ".join(charts)
         crit["匯出者"] = self.user
         return kw, crit
 
@@ -138,7 +138,7 @@ class ExportDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "錯誤", f"查詢失敗：{e}")
             return
-        pts = len({r["patient"]["chart_no"] for r in recs})
+        pts = len({r["patient"]["id"] for r in recs})
         self.preview.setText(f"符合條件：{len(recs)} 筆切片紀錄（{pts} 位病人）")
 
     def _export(self):

@@ -42,6 +42,9 @@ NEG_POS = ["", "No", "Yes"]
 
 # ---- 病人層級欄位（同一病歷號碼共用） ----
 PATIENT_FIELDS = [
+    Field("chart_no", "Chart No.（病歷號）", TEXT),
+    Field("national_id", "National ID（身分證字號）", TEXT),
+    Field("name", "Name（姓名）", TEXT),
     Field("birth_date", "Birth date", DATE),
     Field("gender", "Gender", CHOICE, [""] + GENDERS),
     Field("past_history", "Past history", MULTILINE),
@@ -61,10 +64,15 @@ DIAGNOSES = [
     "Lupus nephritis class IV",
     "Lupus nephritis class V",
     "Lupus nephritis class VI",
+    "Lupus nephritis (class not specified)",
     "Diabetic nephropathy",
     "Hypertensive nephrosclerosis",
     "ANCA-associated GN",
     "Anti-GBM disease",
+    "Crescentic GN type 1 (anti-GBM)",
+    "Crescentic GN type 2 (immune complex)",
+    "Crescentic GN type 3 (pauci-immune)",
+    "Mesangial proliferative GN (non-IgA)",
     "MPGN",
     "C3 glomerulopathy",
     "Infection-related GN",
@@ -77,21 +85,35 @@ DIAGNOSES = [
     "Chronic tubulointerstitial nephritis",
     "Alport syndrome / Thin basement membrane",
     "Advanced chronic sclerosing nephropathy",
+    "Transplant kidney biopsy",
+]
+
+# TSN 登錄系統的臨床診斷選項
+CLINICAL_DIAGNOSES = [
+    "Nephrotic syndrome or unexplained heavy proteinuria",
+    "Acute kidney injury",
+    "Persistent hematuria",
+    "RPGN",
+    "Acute nephritic syndrome",
+    "Chronic nephritic syndrome",
+    "Kidney disease associated vasculitis",
+    "Kidney disease associated with metabolic disorder",
+    "Others",
 ]
 
 # ---- 抽血檢查（每個 panel 可輸入多個日期） ----
 LAB_PANELS = {
     "cbc": ("CBC / Coagulation",
             ["WBC", "Hb", "HCT", "MCV", "PLT", "INR", "PT", "APTT",
-             "SEG", "LYM", "MONO", "EOS", "BASO"]),
+             "SEG", "LYM", "MONO", "EOS", "BASO", "Haptoglobin"]),
     "chem": ("Renal function / Electrolytes",
              ["BUN", "Cr", "eGFR", "Na", "K", "Cl", "Ca", "Mg", "IP"]),
     "liver": ("Liver / Lipid",
               ["AST", "ALT", "LDH", "TP", "Alb", "Chol", "HDL", "LDL", "TG", "UA"]),
     "ig": ("Immunoglobulin / Complement",
-           ["IgG", "IgA", "IgM", "IgE", "IgD", "C3", "C4", "Kappa", "Lambda", "Kappa/Lambda"]),
+           ["IgG", "IgA", "IgM", "IgE", "IgD", "C3", "C4", "Kappa", "Lambda", "Kappa/Lambda", "IgG4"]),
     "endo": ("Endocrine / Infection",
-             ["FBS", "HbA1c", "fT4", "TSH", "HIV", "HBsAg", "Anti-HBc", "Anti-HCV", "VDRL", "CRP"]),
+             ["FBS", "HbA1c", "fT4", "TSH", "HIV", "HBsAg", "Anti-HBc", "Anti-HCV", "VDRL", "TPHA", "ASLO", "CRP"]),
 }
 
 
@@ -147,6 +169,9 @@ SECTIONS: List[Section] = [
         Field("uacr", "Spot UACR", NUMBER, unit="mg/g"),
         Field("upcr", "Spot UPCR", NUMBER, unit="mg/g"),
         Field("urine_24hr_protein", "24hr urine protein", NUMBER, unit="mg/day"),
+        Field("urine_24hr_albumin", "24hr urine albumin", NUMBER, unit="mg/day"),
+        Field("ua_rbc", "U/A RBC (hematuria)", CHOICE, NEG_POS),
+        Field("dysmorphic_rbc", "Dysmorphic RBC", CHOICE, NEG_POS),
         Field("urine_longitudinal", "Longitudinal results", MULTILINE),
     ]),
     Section("autoimmune", "Autoimmune profile", [
@@ -155,9 +180,13 @@ SECTIONS: List[Section] = [
         _autoab("ab_rf", "Rheumatoid factor", "Pos ≥14 IU/mL"),
         _autoab("ab_ro", "Anti-Ro", "Neg <7 / Equ 7-10 / Pos >10 U/mL"),
         _autoab("ab_la", "Anti-La", "Neg <7 / Equ 7-10 / Pos >10 U/mL"),
+        _autoab("ab_anca", "ANCA"),
         _autoab("ab_canca", "C-ANCA", "Neg <2 / Equ 2-3 / Pos >3 IU/mL"),
         _autoab("ab_panca", "P-ANCA", "Neg <3.5 / Equ 3.5-5 / Pos >5 IU/mL"),
+        _autoab("ab_mpo", "ANCA-MPO"),
+        _autoab("ab_pr3", "ANCA-PR3"),
         _autoab("ab_gbm", "Anti-GBM", "Neg <7 / Equ 7-10 / Pos >10 U/mL"),
+        _autoab("ab_pla2r", "Anti-PLA2R (IgG) Ab"),
         _autoab("ab_cryo", "Cryoglobulin"),
         _autoab("ab_asma", "ASMA"),
         _autoab("ab_rnp", "RNP (optional)", "Neg <5 / Equ 5-10 / Pos >10 U/mL"),
@@ -169,7 +198,7 @@ SECTIONS: List[Section] = [
     ]),
     Section("immunoglobulin", "Immunoglobulin profile", [
         Field("ife", "Immunofixation electrophoresis (IFE)", MULTILINE),
-        Field("electrophoresis", "Electrophoresis", MULTILINE),
+        Field("electrophoresis", "Electrophoresis (PEP serum)", MULTILINE),
     ], lab_panels=["ig"]),
     Section("endocrine", "Endocrine / infection profile", lab_panels=["endo"]),
     Section("ultrasound", "Renal ultrasound", [
@@ -195,6 +224,24 @@ SECTIONS: List[Section] = [
         Field("path_if", "IF", MULTILINE),
         Field("path_em", "EM", MULTILINE),
     ], diagnosis=True),
+    Section("tsn", "TSN registry", [
+        Field("tsn_patient_id", "TSN 系統病患 ID", TEXT),
+        Field("tsn_biopsy_no", "TSN 切片編號", TEXT),
+        Field("tsn_lab_no", "TSN 檢驗編號", TEXT),
+        Field("tsn_lab_upload_date", "TSN 檢驗數據上傳日期", DATE),
+        Field("tsn_category", "登錄類別", CHOICE, ["", "TSN", "CKD"]),
+        Field("tsn_hospital", "醫院名稱", TEXT),
+        Field("hx_dm", "DM", CHOICE, NEG_POS),
+        Field("hx_htn", "HTN", CHOICE, NEG_POS),
+        Field("tsn_etiology", "發病原因", TEXT),
+        Field("tsn_family_history", "家族史", TEXT),
+        Field("tsn_risk_factors", "危險因子", MULTILINE),
+        Field("tsn_med_habit", "用藥習慣", TEXT),
+        Field("clinical_dx", "Clinical diagnosis", CHECKS, CLINICAL_DIAGNOSES),
+        Field("clinical_dx_other", "Clinical diagnosis (Others 說明)", TEXT),
+        Field("tsn_path_dx", "TSN pathology diagnosis（原始文字）", TEXT),
+        Field("tsn_path_dx_other", "TSN pathology diagnosis (Others 說明)", MULTILINE),
+    ]),
 ]
 
 

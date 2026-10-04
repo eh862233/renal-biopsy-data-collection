@@ -5,10 +5,11 @@ from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox, QStackedWidget
 
 from .. import config
-from ..db import ConflictError
-from ..utils import machine_user
+from ..db import ConflictError, DuplicateIdentifierError
+from ..utils import looks_like_national_id, machine_user, normalize_national_id, valid_national_id
 from .backup_dialog import RestoreDialog, backup_now
 from .export_dialog import ExportDialog
+from .import_dialog import import_tsn
 from .record_form import RecordForm
 from .search_page import SearchPage
 
@@ -44,6 +45,9 @@ class MainWindow(QMainWindow):
             act_restore = QAction("從備份還原", self)
             act_restore.triggered.connect(self.restore)
             tb.addAction(act_restore)
+            act_import = QAction("匯入 TSN Excel", self)
+            act_import.triggered.connect(self.import_tsn)
+            tb.addAction(act_import)
             tb.addSeparator()
         act_logout = QAction("登出", self)
         act_logout.triggered.connect(self.logout)
@@ -71,26 +75,53 @@ class MainWindow(QMainWindow):
         self.search.edit.setFocus()
 
     # ------------------------------------------------------------------ 查詢
-    def do_search(self, chart_no: str):
+    def do_search(self, term: str):
         try:
-            patient = self.db.get_patient(chart_no)
-            biopsies = self.db.list_biopsies(chart_no) if patient else []
+            patient = self.db.find_patient(term)
+            biopsies = self.db.list_biopsies(patient["id"]) if patient else []
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
             return
-        self.search.show_result(chart_no, patient, biopsies)
+        self.search.show_result(term, patient, biopsies)
         if not patient:
-            r = QMessageBox.question(self, "查無資料",
-                                     f"病歷號「{chart_no}」目前沒有資料。\n要建立一筆新的病歷資料嗎？")
+            is_id = looks_like_national_id(term)
+            kind = "身分證字號" if is_id else "病歷號"
+            r = QMessageBox.question(
+                self, "查無資料",
+                f"「{term}」目前沒有資料。\n要以此{kind}建立一位新病人嗎？\n\n"
+                f"（另一個號碼可在 Patient profile 頁補上；若{kind}判斷錯誤，也可在該頁修改）")
             if r == QMessageBox.Yes:
-                self.new_biopsy(chart_no)
+                ids = {"national_id": normalize_national_id(term)} if is_id else {"chart_no": term}
+                self._open_new(self.db.empty_record(None, **ids))
 
-    def new_biopsy(self, chart_no: str):
+    def _refresh_search(self, patient_id=None):
+        """重新整理查詢頁（例如存檔、刪除後）。"""
         try:
-            rec = self.db.empty_record(chart_no)
+            p = self.db.get_patient(patient_id) if patient_id else None
+            if p:
+                term = p.get("chart_no") or p.get("national_id")
+                self.search.edit.setText(term)
+                self.search.show_result(term, p, self.db.list_biopsies(p["id"]))
+            else:
+                self.search.show_result(self.search.term or None, None, [])
+        except sqlite3.Error:
+            pass
+
+    def new_biopsy(self):
+        if not self.search.patient:
+            return
+        try:
+            p = self.db.get_patient(self.search.patient["id"])
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
             return
+        if p is None:
+            QMessageBox.warning(self, "找不到", "此病人資料已被刪除。")
+            self._refresh_search()
+            return
+        self._open_new(self.db.empty_record(p))
+
+    def _open_new(self, rec):
         self.form.load(rec)
         self.stack.setCurrentWidget(self.form)
 
@@ -100,7 +131,7 @@ class MainWindow(QMainWindow):
             rec = self.db.load_record(biopsy_id)
         except KeyError:
             QMessageBox.warning(self, "找不到", "此筆紀錄已被刪除。")
-            self.do_search(self.search.chart_no)
+            self._refresh_search(self.search.patient and self.search.patient["id"])
             return
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
@@ -121,10 +152,18 @@ class MainWindow(QMainWindow):
         except ValueError as e:
             QMessageBox.warning(self, "資料有誤，尚未儲存", str(e))
             return
-        b = rec["biopsy"]
+        b, p = rec["biopsy"], rec["patient"]
+        nid = p.get("national_id")
+        if nid and nid != rec.get("patient_orig", {}).get("national_id") \
+                and not valid_national_id(nid):
+            r = QMessageBox.question(
+                self, "身分證字號可能有誤",
+                f"身分證字號「{nid}」的格式或檢查碼不正確。\n確定要以此號碼儲存嗎？")
+            if r != QMessageBox.Yes:
+                return
         try:
-            if b.get("id") is None:
-                same = [x for x in self.db.list_biopsies(rec["patient"]["chart_no"])
+            if b.get("id") is None and p.get("id"):
+                same = [x for x in self.db.list_biopsies(p["id"])
                         if x["biopsy_date"] == b["data"].get("biopsy_date")]
                 if same:
                     r = QMessageBox.question(
@@ -139,6 +178,9 @@ class MainWindow(QMainWindow):
                 if ok:
                     self._set_lock(bid)
             fresh = self.db.load_record(bid)
+        except ValueError as e:  # 號碼重複、未填號碼
+            QMessageBox.warning(self, "尚未儲存", str(e))
+            return
         except ConflictError as e:
             r = QMessageBox.warning(
                 self, "資料衝突，尚未儲存",
@@ -148,8 +190,8 @@ class MainWindow(QMainWindow):
             if r == QMessageBox.Yes and b.get("id") is not None:
                 self.open_biopsy(b["id"])
             elif r == QMessageBox.Yes:
-                self.do_search(rec["patient"]["chart_no"])
                 self.stack.setCurrentWidget(self.search)
+                self.do_search(p.get("national_id") or p.get("chart_no"))
             return
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤，尚未儲存", DB_ERROR_MSG.format(e))
@@ -176,15 +218,10 @@ class MainWindow(QMainWindow):
         if not self._confirm_leave():
             return
         self._release_lock()
-        chart = self.form.record.get("patient", {}).get("chart_no")
+        pid = self.form.record.get("patient", {}).get("id")
         self.stack.setCurrentWidget(self.search)
-        if chart:
-            self.search.edit.setText(chart)
-            try:
-                p = self.db.get_patient(chart)
-                self.search.show_result(chart, p, self.db.list_biopsies(chart) if p else [])
-            except sqlite3.Error:
-                pass
+        if pid:
+            self._refresh_search(pid)
 
     def delete_biopsy(self, biopsy_id: int):
         if not self.is_admin:
@@ -202,29 +239,37 @@ class MainWindow(QMainWindow):
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
             return
-        self.do_search(self.search.chart_no) if self.db.get_patient(self.search.chart_no) \
-            else self.search.show_result(self.search.chart_no, None, [])
+        self._refresh_search(self.search.patient and self.search.patient["id"])
 
     def export(self):
         ExportDialog(self.db, self.user, self).exec()
 
-    def restore(self):
-        if not self.is_admin:
-            return
+    def _prepare_bulk_change(self, what: str) -> bool:
+        """還原、匯入前：離開編輯畫面，並確認沒有其他電腦正在編輯。"""
         if self.stack.currentWidget() is self.form:
             if not self._confirm_leave():
-                return
+                return False
             self._release_lock()
             self.stack.setCurrentWidget(self.search)
         try:
             others = self.db.active_locks(self.holder)
         except sqlite3.Error as e:
             QMessageBox.critical(self, "資料庫錯誤", DB_ERROR_MSG.format(e))
-            return
+            return False
         if others:
-            QMessageBox.warning(self, "暫時無法還原",
-                                "以下電腦正在編輯資料，請等對方關閉紀錄後再還原：\n\n"
+            QMessageBox.warning(self, f"暫時無法{what}",
+                                f"以下電腦正在編輯資料，請等對方關閉紀錄後再{what}：\n\n"
                                 + "\n".join(others))
+            return False
+        return True
+
+    def import_tsn(self):
+        if self.is_admin and self._prepare_bulk_change("匯入"):
+            if import_tsn(self, self.db, self.user):
+                self._refresh_search(self.search.patient and self.search.patient["id"])
+
+    def restore(self):
+        if not self.is_admin or not self._prepare_bulk_change("還原"):
             return
         dlg = RestoreDialog(self.db, self)
         if dlg.exec() != RestoreDialog.Accepted or not dlg.selected:
